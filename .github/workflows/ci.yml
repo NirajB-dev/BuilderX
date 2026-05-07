@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    name: Build & Type-check
+    name: Type-check & Build
     runs-on: ubuntu-latest
 
     steps:
@@ -25,7 +25,9 @@ jobs:
         run: npm ci
 
       - name: Type-check
-        run: npx tsc --noEmit
+        # Use npm run typecheck — resolves tsc from node_modules/.bin/tsc
+        # NOT `npx tsc` which installs a wrong "tsc" package from npm
+        run: npm run typecheck
 
       - name: Build
         run: npm run build
