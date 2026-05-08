@@ -297,3 +297,24 @@ export const COMPONENT_REGISTRY: Record<string, ComponentDefinition> = {
 };
 
 export const REGISTRY_LIST = Object.values(COMPONENT_REGISTRY);
+
+/** Component types that default to full canvas width */
+export const FULL_WIDTH_TYPES = new Set([
+  'navbar', 'hero', 'features', 'cta', 'divider', 'grid',
+]);
+
+/** Default { width, height } in px when adding to free-form canvas */
+export const DEFAULT_SIZE: Record<string, { width: number; height: number }> = {
+  navbar:   { width: 1440, height: 72  },
+  hero:     { width: 1440, height: 500 },
+  features: { width: 1440, height: 440 },
+  cta:      { width: 1440, height: 220 },
+  divider:  { width: 1440, height: 24  },
+  grid:     { width: 1440, height: 320 },
+  text:     { width: 400,  height: 80  },
+  button:   { width: 220,  height: 56  },
+  image:    { width: 600,  height: 340 },
+  card:     { width: 340,  height: 220 },
+  form:     { width: 520,  height: 440 },
+  container:{ width: 640,  height: 300 },
+};

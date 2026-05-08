@@ -1,46 +1,42 @@
-import { useRef } from 'react';
-import { useDrop, useDrag } from 'react-dnd';
-import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Sparkles, User, FileText, Mail } from 'lucide-react';
-import { useCanvas, CanvasNode } from '../store/canvasContext';
+import { useRef, useCallback, memo } from 'react';
+import { useDrop } from 'react-dnd';
+import { motion, useMotionValue, useTransform } from 'motion/react';
+import { Plus, Sparkles, User, FileText, Mail, Copy, Trash2 } from 'lucide-react';
+import {
+  useCanvas, CanvasNode, CANVAS_WIDTHS, SNAP, snapGrid, autoLayout,
+} from '../store/canvasContext';
 import { NodeRenderer } from './canvas/NodeRenderer';
-import { COMPONENT_REGISTRY } from '../registry/componentRegistry';
+
+const CANVAS_HEIGHT = 2400;
 
 // ── Quick-start templates ─────────────────────────────────────────────────
 
 const TEMPLATES = [
-  { id: 'saas',      label: 'SaaS Landing',  icon: Sparkles, nodes: ['navbar','hero','features','cta'] },
-  { id: 'portfolio', label: 'Portfolio',      icon: User,     nodes: ['navbar','hero','card','form'] },
-  { id: 'article',   label: 'Article',        icon: FileText, nodes: ['navbar','hero','text','divider','cta'] },
-  { id: 'contact',   label: 'Contact Page',   icon: Mail,     nodes: ['navbar','hero','form'] },
+  { id: 'saas',      label: 'SaaS Landing', icon: Sparkles, nodes: ['navbar','hero','features','cta'] },
+  { id: 'portfolio', label: 'Portfolio',    icon: User,      nodes: ['navbar','hero','card','form'] },
+  { id: 'article',   label: 'Article',      icon: FileText,  nodes: ['navbar','hero','text','divider','cta'] },
+  { id: 'contact',   label: 'Contact',      icon: Mail,      nodes: ['navbar','hero','form'] },
 ] as const;
 
 function EmptyState({ onTemplate }: { onTemplate: (types: string[]) => void }) {
   return (
-    <div
-      className="flex flex-col items-center justify-center h-full min-h-[600px] gap-8 select-none"
-      style={{ backgroundImage: 'radial-gradient(circle at 1px 1px,rgba(255,255,255,0.04) 1px,transparent 0)', backgroundSize: '28px 28px' }}
-    >
-      <div className="text-center">
+    <div className="absolute inset-0 flex flex-col items-center justify-center gap-8 pointer-events-none select-none" style={{ zIndex: 1 }}>
+      <div className="pointer-events-auto text-center">
         <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500/20 to-violet-500/20 border border-white/10 flex items-center justify-center mx-auto mb-4">
-          <Plus className="w-7 h-7 text-white/40" />
+          <Plus className="w-7 h-7 text-white/35" />
         </div>
-        <h3 className="font-semibold text-white/70 mb-1.5">Blank Canvas</h3>
-        <p className="text-sm text-white/30 font-mono">Drag from the sidebar · click a template · or use AI Generate</p>
+        <h3 className="font-semibold text-white/55 mb-1.5">Blank Canvas</h3>
+        <p className="text-sm text-white/25 font-mono">Drag from sidebar · drop anywhere · or pick a template</p>
       </div>
-      <div className="flex flex-wrap justify-center gap-3 px-8">
+      <div className="pointer-events-auto flex flex-wrap justify-center gap-3">
         {TEMPLATES.map(t => {
           const Icon = t.icon;
           return (
-            <motion.button
-              key={t.id}
-              whileHover={{ scale: 1.04, y: -2 }}
-              whileTap={{ scale: 0.97 }}
+            <motion.button key={t.id}
+              whileHover={{ scale: 1.04, y: -2 }} whileTap={{ scale: 0.97 }}
               onClick={() => onTemplate([...t.nodes])}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 hover:border-blue-500/30 hover:bg-white/8 transition-all text-sm text-white/65 hover:text-white/90"
-            >
-              <Icon className="w-4 h-4 text-blue-400" />
-              {t.label}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 hover:border-blue-500/30 hover:bg-white/8 transition-all text-sm text-white/55 hover:text-white/90">
+              <Icon className="w-4 h-4 text-blue-400" />{t.label}
             </motion.button>
           );
         })}
@@ -49,203 +45,215 @@ function EmptyState({ onTemplate }: { onTemplate: (types: string[]) => void }) {
   );
 }
 
-// ── Drop zone between nodes ───────────────────────────────────────────────
-// Key fix: store callbacks in a ref so the useDrop factory closure never goes stale.
+// ── Resize handle (bottom-right corner) ───────────────────────────────────
 
-type SidebarItem = { id: string; name: string };
-type CanvasItem  = { nodeId: string };
-type DragItem    = SidebarItem | CanvasItem;
+const ResizeHandle = memo(function ResizeHandle({
+  nodeId, startW, startH,
+}: { nodeId: string; startW: number; startH: number }) {
+  const { updateSize } = useCanvas();
+  const orig = useRef({ w: startW, h: startH });
 
-function isSidebarItem(item: DragItem): item is SidebarItem {
-  return 'id' in item;
-}
+  const onMouseDown = (e: React.MouseEvent) => {
+    e.stopPropagation(); e.preventDefault();
+    orig.current = { w: startW, h: startH };
+    const startMx = e.clientX; const startMy = e.clientY;
 
-function DropZone({ index }: { index: number }) {
-  const { insertNodeAt, moveNodeTo } = useCanvas();
-
-  // Mutable ref — always reflects the latest values without recreating the hook
-  const latest = useRef({ insertNodeAt, moveNodeTo, index });
-  latest.current = { insertNodeAt, moveNodeTo, index };
-
-  const [{ isOver, canDrop }, drop] = useDrop<DragItem, void, { isOver: boolean; canDrop: boolean }>(
-    () => ({
-      accept: ['component', 'canvas-node'],
-      drop: (item) => {
-        if (isSidebarItem(item)) {
-          latest.current.insertNodeAt(item.id, latest.current.index);
-        } else {
-          latest.current.moveNodeTo(item.nodeId, latest.current.index);
-        }
-      },
-      collect: m => ({ isOver: m.isOver(), canDrop: m.canDrop() }),
-    }),
-    [] // factory called once; latest ref keeps it fresh
-  );
+    const onMove = (ev: MouseEvent) => {
+      updateSize(
+        nodeId,
+        Math.max(80,  snapGrid(orig.current.w + ev.clientX - startMx)),
+        Math.max(40,  snapGrid(orig.current.h + ev.clientY - startMy)),
+      );
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
 
   return (
-    // Plain div — react-dnd needs a real DOM element, not a Motion wrapper
-    <div
-      ref={drop}
+    <div onMouseDown={onMouseDown} title="Drag to resize"
       style={{
-        height: isOver && canDrop ? 44 : 6,
-        transition: 'height 0.15s ease, background 0.15s ease',
-        background: isOver && canDrop ? 'rgba(59,130,246,0.12)' : 'transparent',
-        borderRadius: 6,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        border: isOver && canDrop ? '1px dashed rgba(59,130,246,0.45)' : '1px solid transparent',
-        margin: '0 4px',
+        position: 'absolute', right: -5, bottom: -5,
+        width: 12, height: 12, borderRadius: 3,
+        background: '#3b82f6', cursor: 'nwse-resize', zIndex: 30,
+        boxShadow: '0 0 0 2px #030307',
       }}
-    >
-      {isOver && canDrop && (
-        <span style={{ fontSize: 11, color: 'rgba(96,165,250,0.85)', fontFamily: 'monospace' }}>Insert here</span>
-      )}
-    </div>
+    />
   );
-}
+});
 
-// ── Draggable canvas node (for reordering) ────────────────────────────────
+// ── Canvas node wrapper — free-form draggable ──────────────────────────────
 
-function DraggableNode({ node, index, total }: { node: CanvasNode; index: number; total: number }) {
-  const { selectedId } = useCanvas();
+const CanvasNodeWrap = memo(function CanvasNodeWrap({ node, idx }: { node: CanvasNode; idx: number }) {
+  const { selectedId, selectNode, removeNode, duplicateNode, updatePosition } = useCanvas();
   const isSelected = node.id === selectedId;
 
-  const [{ isDragging }, drag] = useDrag<CanvasItem, void, { isDragging: boolean }>(
-    () => ({
-      type: 'canvas-node',
-      item: { nodeId: node.id },
-      collect: m => ({ isDragging: m.isDragging() }),
-    }),
-    [node.id]
-  );
+  // Motion values track current position (avoids React re-renders during drag)
+  const mx = useMotionValue(node.position.x);
+  const my = useMotionValue(node.position.y);
+
+  // Sync motion values if position changes externally (undo, AI generate)
+  const lastX = useRef(node.position.x);
+  const lastY = useRef(node.position.y);
+  if (lastX.current !== node.position.x) { mx.set(node.position.x); lastX.current = node.position.x; }
+  if (lastY.current !== node.position.y) { my.set(node.position.y); lastY.current = node.position.y; }
+
+  const xRounded = useTransform(mx, v => Math.round(v));
+  const yRounded = useTransform(my, v => Math.round(v));
 
   return (
-    <div style={{ position: 'relative', opacity: isDragging ? 0.35 : 1, transition: 'opacity 0.15s' }}>
-      {/* Drag handle — plain div so react-dnd works reliably */}
-      <div
-        ref={drag}
-        title="Drag to reorder"
-        style={{
-          position: 'absolute',
-          left: -22,
-          top: '50%',
-          transform: 'translateY(-50%)',
-          zIndex: 30,
-          cursor: 'grab',
-          padding: '6px 4px',
-          opacity: isSelected ? 0.55 : 0.12,
-          transition: 'opacity 0.2s',
-        }}
-      >
-        <svg width="10" height="18" viewBox="0 0 10 18" fill="rgba(255,255,255,0.9)">
-          <circle cx="3" cy="3"  r="1.4"/><circle cx="7" cy="3"  r="1.4"/>
-          <circle cx="3" cy="9"  r="1.4"/><circle cx="7" cy="9"  r="1.4"/>
-          <circle cx="3" cy="15" r="1.4"/><circle cx="7" cy="15" r="1.4"/>
-        </svg>
+    <motion.div
+      style={{
+        position: 'absolute', top: 0, left: 0,
+        x: mx, y: my,
+        width: node.size.width,
+        height: node.size.height,
+        zIndex: isSelected ? 500 : idx + 1,
+      }}
+      drag
+      dragMomentum={false}
+      dragElastic={0}
+      onDragEnd={() => {
+        const nx = Math.max(0, snapGrid(mx.get()));
+        const ny = Math.max(0, snapGrid(my.get()));
+        mx.set(nx); my.set(ny);
+        updatePosition(node.id, nx, ny);
+      }}
+      onClick={e => { e.stopPropagation(); selectNode(node.id); }}
+    >
+      {/* Rendered content — pointer-events off so drag gesture owns the element */}
+      <div style={{ width: '100%', height: '100%', overflow: 'hidden', pointerEvents: 'none', userSelect: 'none' }}>
+        <NodeRenderer node={node} />
       </div>
 
-      {/* Animation wrapper — separate from the drag ref */}
-      <motion.div
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.97 }}
-        transition={{ duration: 0.16 }}
-      >
-        <NodeRenderer node={node} isSelected={isSelected} isFirst={index === 0} isLast={index === total - 1} />
-      </motion.div>
-    </div>
+      {/* Selection overlays */}
+      {isSelected && (
+        <>
+          {/* Blue outline ring */}
+          <div style={{
+            position: 'absolute', inset: 0,
+            border: '2px solid #3b82f6', borderRadius: 4,
+            pointerEvents: 'none', zIndex: 10,
+          }} />
+
+          {/* x, y, W×H label */}
+          <div style={{
+            position: 'absolute', top: -24, left: 0,
+            background: '#3b82f6', color: '#fff',
+            fontSize: 10, fontFamily: 'monospace',
+            padding: '2px 7px', borderRadius: '4px 4px 0 0',
+            pointerEvents: 'none', whiteSpace: 'nowrap', zIndex: 20,
+          }}>
+            <motion.span>{xRounded}</motion.span>, <motion.span>{yRounded}</motion.span>
+            {' · '}{node.size.width}×{node.size.height}
+          </div>
+
+          {/* Action buttons */}
+          <div style={{ position: 'absolute', top: -34, right: 0, display: 'flex', gap: 4, zIndex: 30 }}
+            onClick={e => e.stopPropagation()}>
+            <button onClick={() => duplicateNode(node.id)} title="Duplicate (⌘D)"
+              style={{ width: 26, height: 26, borderRadius: 6, background: 'rgba(10,10,18,0.95)', border: '1px solid rgba(255,255,255,0.14)', color: 'rgba(255,255,255,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+              <Copy size={12} />
+            </button>
+            <button onClick={() => removeNode(node.id)} title="Delete"
+              style={{ width: 26, height: 26, borderRadius: 6, background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.28)', color: '#f87171', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+              <Trash2 size={12} />
+            </button>
+          </div>
+
+          {/* Resize corner */}
+          <ResizeHandle nodeId={node.id} startW={node.size.width} startH={node.size.height} />
+        </>
+      )}
+    </motion.div>
   );
-}
+});
 
 // ── Main Canvas ────────────────────────────────────────────────────────────
 
-const VIEWPORT_WIDTHS = { desktop: '100%', tablet: '768px', mobile: '375px' };
-const VIEWPORT_PX    = { desktop: 1280,    tablet: 768,     mobile: 375 };
-
 export function Canvas() {
-  const { nodes, selectNode, addNode, moveNodeTo, setNodes, viewportMode } = useCanvas();
+  const { nodes, selectNode, addNode, setNodes, viewportMode } = useCanvas();
+  const scrollRef  = useRef<HTMLDivElement>(null);
+  const artboardRef = useRef<HTMLDivElement>(null);
+  const cw = CANVAS_WIDTHS[viewportMode];
 
-  // Stable ref — lets the useDrop factory stay fresh without re-creating the hook
-  const latest = useRef({ addNode, moveNodeTo, nodesLen: nodes.length });
-  latest.current = { addNode, moveNodeTo, nodesLen: nodes.length };
+  // Mutable ref for useDrop factory (avoids stale closure)
+  const latest = useRef({ addNode, cw, scrollTop: 0 });
+  latest.current.addNode = addNode;
+  latest.current.cw = cw;
 
-  // Whole-canvas drop target: catches drops that miss the between-node zones
-  const [{ isOver: isOverCanvas }, dropCanvas] = useDrop<DragItem, void, { isOver: boolean }>(
+  const onScroll = useCallback(() => {
+    latest.current.scrollTop = scrollRef.current?.scrollTop ?? 0;
+  }, []);
+
+  const [{ isOver }, drop] = useDrop<{ id: string }, void, { isOver: boolean }>(
     () => ({
-      accept: ['component', 'canvas-node'],
+      accept: 'component',
       drop: (item, monitor) => {
-        if (monitor.didDrop()) return; // already handled by a DropZone child
-        if (isSidebarItem(item)) {
-          latest.current.addNode(item.id);
+        const offset = monitor.getClientOffset();
+        const rect   = artboardRef.current?.getBoundingClientRect();
+        if (offset && rect) {
+          const x = snapGrid(Math.max(0, offset.x - rect.left));
+          const y = snapGrid(Math.max(0, offset.y - rect.top + latest.current.scrollTop));
+          latest.current.addNode(item.id, x, y, latest.current.cw);
+        } else {
+          latest.current.addNode(item.id, undefined, undefined, latest.current.cw);
         }
-        // canvas-node reorder is handled by DropZones only
       },
-      collect: m => ({ isOver: m.isOver({ shallow: true }) }),
+      collect: m => ({ isOver: m.isOver() }),
     }),
     []
   );
 
-  const handleTemplate = (types: string[]) => {
-    const ns: CanvasNode[] = types.map(t => ({
-      id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}-${t}`,
-      type: t,
-      props: { ...COMPONENT_REGISTRY[t]?.defaultProps },
-    }));
-    setNodes(ns);
-  };
+  // Merge react-dnd drop ref with our artboard ref
+  const setRefs = useCallback((el: HTMLDivElement | null) => {
+    (artboardRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
+    drop(el);
+  }, [drop]);
+
+  const handleTemplate = (types: string[]) => setNodes(autoLayout(types, cw));
 
   return (
-    <div
-      className="flex-1 overflow-auto"
-      style={{ background: '#050509' }}
+    <div ref={scrollRef} onScroll={onScroll}
+      className="flex-1 overflow-auto" style={{ background: '#030307' }}
       onClick={() => selectNode(null)}
     >
-      {/* Viewport label */}
-      <div className="sticky top-0 z-10 flex justify-center py-1 bg-[#050509]/80 backdrop-blur-sm border-b border-white/5">
-        <span className="text-[10px] font-mono text-white/25">
-          {viewportMode.charAt(0).toUpperCase() + viewportMode.slice(1)} — {VIEWPORT_PX[viewportMode]}px
+      {/* Viewport indicator */}
+      <div className="sticky top-0 z-[100] flex items-center justify-center py-0.5 border-b border-white/5 bg-[#030307]/90 backdrop-blur-sm">
+        <span className="text-[10px] font-mono text-white/22">
+          {viewportMode} — {cw}px &nbsp;·&nbsp; {CANVAS_HEIGHT}px canvas &nbsp;·&nbsp; {SNAP}px grid
         </span>
       </div>
 
-      <div className="flex items-start justify-center px-8 py-4 min-h-full">
-        <div
+      {/* Scrollable body */}
+      <div className="flex justify-center py-6 px-4 min-h-full">
+        {/* Artboard */}
+        <div ref={setRefs}
+          onClick={e => e.stopPropagation()}
           style={{
-            width: '100%',
-            maxWidth: VIEWPORT_WIDTHS[viewportMode],
-            transition: 'max-width 0.32s cubic-bezier(0.4,0,0.2,1)',
-            ['--preview-width' as string]: `${VIEWPORT_PX[viewportMode]}px`,
             position: 'relative',
-          } as React.CSSProperties}
+            width: cw, minWidth: cw,
+            height: CANVAS_HEIGHT, flexShrink: 0,
+            background: isOver ? 'rgba(59,130,246,0.03)' : 'rgba(12,12,18,0.97)',
+            backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(255,255,255,0.05) 1px, transparent 0)',
+            backgroundSize: `${SNAP * 2.5}px ${SNAP * 2.5}px`,
+            border: isOver
+              ? '2px dashed rgba(59,130,246,0.5)'
+              : '1px solid rgba(255,255,255,0.07)',
+            borderRadius: 12,
+            boxShadow: '0 24px 80px rgba(0,0,0,0.7)',
+            overflow: 'visible',
+            transition: 'border-color 0.12s, background 0.12s',
+          }}
         >
-          {/* Outer drop target — plain div required by react-dnd */}
-          <div
-            ref={dropCanvas}
-            className="rounded-2xl border border-white/10 overflow-visible shadow-2xl"
-            style={{
-              minHeight: 600,
-              background: isOverCanvas ? 'rgba(59,130,246,0.03)' : 'rgba(13,13,18,0.8)',
-              backdropFilter: 'blur(20px)',
-              transition: 'background 0.2s',
-              outline: isOverCanvas ? '2px dashed rgba(59,130,246,0.3)' : '2px solid transparent',
-            }}
-            onClick={e => e.stopPropagation()}
-          >
-            {nodes.length === 0 ? (
-              <EmptyState onTemplate={handleTemplate} />
-            ) : (
-              <AnimatePresence mode="popLayout">
-                {nodes.map((node, idx) => (
-                  <div key={node.id}>
-                    <DropZone index={idx} />
-                    <DraggableNode node={node} index={idx} total={nodes.length} />
-                  </div>
-                ))}
-                {/* Final drop zone after last node */}
-                <DropZone index={nodes.length} />
-              </AnimatePresence>
-            )}
-          </div>
+          {nodes.length === 0 && <EmptyState onTemplate={handleTemplate} />}
+
+          {nodes.map((node, idx) => (
+            <CanvasNodeWrap key={node.id} node={node} idx={idx} />
+          ))}
         </div>
       </div>
     </div>

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { X, Sparkles, Loader2, Key, ChevronRight, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { useCanvas, CanvasNode } from '../store/canvasContext';
+import { useCanvas, CANVAS_WIDTHS, autoLayout } from '../store/canvasContext';
 import { COMPONENT_REGISTRY } from '../registry/componentRegistry';
 
 const SYSTEM_PROMPT = `You are a visual website builder assistant. Given a description, output ONLY a valid JSON array of page sections/components.
@@ -99,18 +99,17 @@ export function AIGenerateModal({ onClose }: Props) {
 
       const items: Array<{ type: string; props: Record<string, any> }> = JSON.parse(jsonMatch[0]);
 
-      const nodes: CanvasNode[] = items
-        .filter(item => COMPONENT_REGISTRY[item.type])
-        .map(item => ({
-          id: `ai-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          type: item.type,
-          props: {
-            ...COMPONENT_REGISTRY[item.type].defaultProps,
-            ...item.props,
-          },
-        }));
+      const validTypes = items.filter(item => COMPONENT_REGISTRY[item.type]).map(item => item.type);
+      if (validTypes.length === 0) throw new Error('No valid components returned. Try rephrasing.');
 
-      if (nodes.length === 0) throw new Error('No valid components returned. Try rephrasing.');
+      const cw = CANVAS_WIDTHS['desktop'];
+      const nodes = autoLayout(validTypes, cw).map((node, i) => ({
+        ...node,
+        props: {
+          ...node.props,
+          ...items.filter(it => COMPONENT_REGISTRY[it.type])[i]?.props,
+        },
+      }));
 
       setNodes(nodes);
 

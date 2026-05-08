@@ -1,10 +1,41 @@
 import React, { createContext, useContext, useReducer, useCallback, useEffect, useRef } from 'react';
-import { COMPONENT_REGISTRY } from '../registry/componentRegistry';
+import { COMPONENT_REGISTRY, FULL_WIDTH_TYPES, DEFAULT_SIZE } from '../registry/componentRegistry';
 
 export interface CanvasNode {
   id: string;
   type: string;
   props: Record<string, any>;
+  position: { x: number; y: number };
+  size: { width: number; height: number };
+}
+
+export const CANVAS_WIDTHS = { desktop: 1440, tablet: 768, mobile: 375 } as const;
+export const SNAP = 8;
+
+export function snapGrid(v: number) {
+  return Math.round(v / SNAP) * SNAP;
+}
+
+/** Auto-stack nodes for templates / AI generation */
+export function autoLayout(types: string[], canvasWidth: number): CanvasNode[] {
+  let y = 0;
+  return types.map(type => {
+    const def = COMPONENT_REGISTRY[type];
+    const ds = DEFAULT_SIZE[type] ?? { width: 400, height: 200 };
+    const isFullWidth = FULL_WIDTH_TYPES.has(type);
+    const width  = isFullWidth ? canvasWidth : ds.width;
+    const height = ds.height;
+    const x = isFullWidth ? 0 : Math.round((canvasWidth - width) / 2);
+    const node: CanvasNode = {
+      id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}-${type}`,
+      type,
+      props: { ...(def?.defaultProps ?? {}) },
+      position: { x, y },
+      size: { width, height },
+    };
+    y += height;
+    return node;
+  });
 }
 
 type NodeSnapshot = CanvasNode[];
@@ -21,15 +52,15 @@ interface CanvasState {
 }
 
 type Action =
-  | { type: 'ADD_NODE'; nodeType: string }
-  | { type: 'INSERT_NODE_AT'; nodeType: string; index: number }
-  | { type: 'REMOVE_NODE'; id: string }
-  | { type: 'SELECT_NODE'; id: string | null }
-  | { type: 'UPDATE_PROP'; id: string; key: string; value: any }
-  | { type: 'MOVE_NODE'; id: string; direction: 'up' | 'down' }
-  | { type: 'MOVE_NODE_TO'; id: string; toIndex: number }
-  | { type: 'SET_NODES'; nodes: CanvasNode[] }
-  | { type: 'SET_VIEWPORT'; mode: 'desktop' | 'tablet' | 'mobile' }
+  | { type: 'ADD_NODE';        nodeType: string; x?: number; y?: number; canvasWidth?: number }
+  | { type: 'REMOVE_NODE';     id: string }
+  | { type: 'SELECT_NODE';     id: string | null }
+  | { type: 'UPDATE_PROP';     id: string; key: string; value: any }
+  | { type: 'UPDATE_POSITION'; id: string; x: number; y: number }
+  | { type: 'UPDATE_SIZE';     id: string; width: number; height: number }
+  | { type: 'SET_NODES';       nodes: CanvasNode[] }
+  | { type: 'SET_VIEWPORT';    mode: 'desktop' | 'tablet' | 'mobile' }
+  | { type: 'DUPLICATE_NODE';  id: string }
   | { type: 'UNDO' }
   | { type: 'REDO' }
   | { type: 'MARK_SAVED' }
@@ -41,10 +72,8 @@ function pushHistory(past: NodeSnapshot[], nodes: CanvasNode[]): NodeSnapshot[] 
   return [...past.slice(-(MAX_HISTORY - 1)), nodes];
 }
 
-const INITIAL_NODES: CanvasNode[] = [];
-
 const INITIAL_STATE: CanvasState = {
-  nodes: INITIAL_NODES,
+  nodes: [],
   selectedId: null,
   viewportMode: 'desktop',
   past: [],
@@ -59,10 +88,19 @@ function canvasReducer(state: CanvasState, action: Action): CanvasState {
     case 'ADD_NODE': {
       const def = COMPONENT_REGISTRY[action.nodeType];
       if (!def) return state;
+      const cw = action.canvasWidth ?? CANVAS_WIDTHS[state.viewportMode];
+      const ds = DEFAULT_SIZE[action.nodeType] ?? { width: 400, height: 200 };
+      const isFullWidth = FULL_WIDTH_TYPES.has(action.nodeType);
+      const width  = isFullWidth ? cw : ds.width;
+      const height = ds.height;
+      const x = action.x !== undefined ? snapGrid(action.x) : isFullWidth ? 0 : Math.round((cw - width) / 2);
+      const y = action.y !== undefined ? snapGrid(action.y) : Math.max(0, ...state.nodes.map(n => n.position.y + n.size.height));
       const newNode: CanvasNode = {
-        id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         type: action.nodeType,
         props: { ...def.defaultProps },
+        position: { x, y },
+        size: { width, height },
       };
       return {
         ...state,
@@ -75,15 +113,29 @@ function canvasReducer(state: CanvasState, action: Action): CanvasState {
     }
 
     case 'REMOVE_NODE': {
-      const idx = state.nodes.findIndex(n => n.id === action.id);
       const newNodes = state.nodes.filter(n => n.id !== action.id);
-      const newSelectedId = state.selectedId === action.id
-        ? (newNodes[idx - 1]?.id ?? newNodes[0]?.id ?? null)
-        : state.selectedId;
       return {
         ...state,
         nodes: newNodes,
-        selectedId: newSelectedId,
+        selectedId: state.selectedId === action.id ? null : state.selectedId,
+        past: pushHistory(state.past, state.nodes),
+        future: [],
+        changeCount: state.changeCount + 1,
+      };
+    }
+
+    case 'DUPLICATE_NODE': {
+      const src = state.nodes.find(n => n.id === action.id);
+      if (!src) return state;
+      const dup: CanvasNode = {
+        ...src,
+        id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        position: { x: src.position.x + 16, y: src.position.y + 16 },
+      };
+      return {
+        ...state,
+        nodes: [...state.nodes, dup],
+        selectedId: dup.id,
         past: pushHistory(state.past, state.nodes),
         future: [],
         changeCount: state.changeCount + 1,
@@ -106,33 +158,10 @@ function canvasReducer(state: CanvasState, action: Action): CanvasState {
       };
     }
 
-    case 'INSERT_NODE_AT': {
-      const def = COMPONENT_REGISTRY[action.nodeType];
-      if (!def) return state;
-      const newNode: CanvasNode = {
-        id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        type: action.nodeType,
-        props: { ...def.defaultProps },
-      };
-      const newNodes = [...state.nodes];
-      newNodes.splice(action.index, 0, newNode);
-      return {
-        ...state,
-        nodes: newNodes,
-        selectedId: newNode.id,
-        past: pushHistory(state.past, state.nodes),
-        future: [],
-        changeCount: state.changeCount + 1,
-      };
-    }
-
-    case 'MOVE_NODE_TO': {
-      const fromIdx = state.nodes.findIndex(n => n.id === action.id);
-      if (fromIdx === -1) return state;
-      const newNodes = [...state.nodes];
-      const [moved] = newNodes.splice(fromIdx, 1);
-      const toIdx = action.toIndex > fromIdx ? action.toIndex - 1 : action.toIndex;
-      newNodes.splice(Math.max(0, toIdx), 0, moved);
+    case 'UPDATE_POSITION': {
+      const newNodes = state.nodes.map(n =>
+        n.id === action.id ? { ...n, position: { x: action.x, y: action.y } } : n
+      );
       return {
         ...state,
         nodes: newNodes,
@@ -142,7 +171,20 @@ function canvasReducer(state: CanvasState, action: Action): CanvasState {
       };
     }
 
-    case 'SET_NODES': {
+    case 'UPDATE_SIZE': {
+      const newNodes = state.nodes.map(n =>
+        n.id === action.id ? { ...n, size: { width: action.width, height: action.height } } : n
+      );
+      return {
+        ...state,
+        nodes: newNodes,
+        past: pushHistory(state.past, state.nodes),
+        future: [],
+        changeCount: state.changeCount + 1,
+      };
+    }
+
+    case 'SET_NODES':
       return {
         ...state,
         nodes: action.nodes,
@@ -151,27 +193,6 @@ function canvasReducer(state: CanvasState, action: Action): CanvasState {
         future: [],
         changeCount: state.changeCount + 1,
       };
-    }
-
-    case 'MOVE_NODE': {
-      const idx = state.nodes.findIndex(n => n.id === action.id);
-      if (idx === -1) return state;
-      const newNodes = [...state.nodes];
-      if (action.direction === 'up' && idx > 0) {
-        [newNodes[idx - 1], newNodes[idx]] = [newNodes[idx], newNodes[idx - 1]];
-      } else if (action.direction === 'down' && idx < newNodes.length - 1) {
-        [newNodes[idx], newNodes[idx + 1]] = [newNodes[idx + 1], newNodes[idx]];
-      } else {
-        return state;
-      }
-      return {
-        ...state,
-        nodes: newNodes,
-        past: pushHistory(state.past, state.nodes),
-        future: [],
-        changeCount: state.changeCount + 1,
-      };
-    }
 
     case 'SET_VIEWPORT':
       return { ...state, viewportMode: action.mode };
@@ -182,6 +203,7 @@ function canvasReducer(state: CanvasState, action: Action): CanvasState {
       return {
         ...state,
         nodes: prev,
+        selectedId: null,
         past: state.past.slice(0, -1),
         future: [state.nodes, ...state.future.slice(0, MAX_HISTORY - 1)],
       };
@@ -211,13 +233,13 @@ function canvasReducer(state: CanvasState, action: Action): CanvasState {
 }
 
 interface CanvasContextValue extends CanvasState {
-  addNode: (nodeType: string) => void;
-  insertNodeAt: (nodeType: string, index: number) => void;
+  addNode: (nodeType: string, x?: number, y?: number, canvasWidth?: number) => void;
   removeNode: (id: string) => void;
+  duplicateNode: (id: string) => void;
   selectNode: (id: string | null) => void;
   updateProp: (id: string, key: string, value: any) => void;
-  moveNode: (id: string, direction: 'up' | 'down') => void;
-  moveNodeTo: (id: string, toIndex: number) => void;
+  updatePosition: (id: string, x: number, y: number) => void;
+  updateSize: (id: string, width: number, height: number) => void;
   setNodes: (nodes: CanvasNode[]) => void;
   setViewport: (mode: 'desktop' | 'tablet' | 'mobile') => void;
   undo: () => void;
@@ -233,86 +255,58 @@ const CanvasContext = createContext<CanvasContextValue | null>(null);
 export function CanvasProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(canvasReducer, INITIAL_STATE);
 
-  // Debounced auto-save simulation
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevChangeCount = useRef(state.changeCount);
 
   useEffect(() => {
     if (state.changeCount === prevChangeCount.current) return;
     prevChangeCount.current = state.changeCount;
-
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
-      // In production: PATCH /canvas/:id with JSON state
-      dispatch({ type: 'MARK_SAVED' });
-    }, 1500);
-
-    return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    };
+    saveTimerRef.current = setTimeout(() => dispatch({ type: 'MARK_SAVED' }), 1500);
+    return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
   }, [state.changeCount]);
 
-  // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      const isMac = navigator.platform.includes('Mac');
-      const mod = isMac ? e.metaKey : e.ctrlKey;
+      const mod = navigator.platform.includes('Mac') ? e.metaKey : e.ctrlKey;
+      const tag = (e.target as HTMLElement).tagName;
+      const isInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 
-      if (mod && e.key === 'z' && !e.shiftKey) {
-        e.preventDefault();
-        dispatch({ type: 'UNDO' });
-      } else if (mod && (e.key === 'Z' || (e.key === 'z' && e.shiftKey))) {
-        e.preventDefault();
-        dispatch({ type: 'REDO' });
-      } else if (mod && e.key === 'y') {
-        e.preventDefault();
-        dispatch({ type: 'REDO' });
-      } else if ((e.key === 'Delete' || e.key === 'Backspace') && state.selectedId) {
-        const tag = (e.target as HTMLElement).tagName;
-        if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') {
-          e.preventDefault();
-          dispatch({ type: 'REMOVE_NODE', id: state.selectedId });
-        }
-      } else if (e.key === 'Escape') {
-        dispatch({ type: 'SELECT_NODE', id: null });
+      if (mod && e.key === 'z' && !e.shiftKey) { e.preventDefault(); dispatch({ type: 'UNDO' }); }
+      else if (mod && (e.key === 'Z' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); dispatch({ type: 'REDO' }); }
+      else if (mod && e.key === 'y') { e.preventDefault(); dispatch({ type: 'REDO' }); }
+      else if (mod && e.key === 'd' && state.selectedId) { e.preventDefault(); dispatch({ type: 'DUPLICATE_NODE', id: state.selectedId }); }
+      else if ((e.key === 'Delete' || e.key === 'Backspace') && state.selectedId && !isInput) {
+        e.preventDefault(); dispatch({ type: 'REMOVE_NODE', id: state.selectedId });
       }
+      else if (e.key === 'Escape') { dispatch({ type: 'SELECT_NODE', id: null }); }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [state.selectedId]);
 
-  const addNode = useCallback((nodeType: string) => dispatch({ type: 'ADD_NODE', nodeType }), []);
-  const insertNodeAt = useCallback((nodeType: string, index: number) => dispatch({ type: 'INSERT_NODE_AT', nodeType, index }), []);
+  const addNode = useCallback((nodeType: string, x?: number, y?: number, canvasWidth?: number) =>
+    dispatch({ type: 'ADD_NODE', nodeType, x, y, canvasWidth }), []);
   const removeNode = useCallback((id: string) => dispatch({ type: 'REMOVE_NODE', id }), []);
+  const duplicateNode = useCallback((id: string) => dispatch({ type: 'DUPLICATE_NODE', id }), []);
   const selectNode = useCallback((id: string | null) => dispatch({ type: 'SELECT_NODE', id }), []);
   const updateProp = useCallback((id: string, key: string, value: any) => dispatch({ type: 'UPDATE_PROP', id, key, value }), []);
-  const moveNode = useCallback((id: string, direction: 'up' | 'down') => dispatch({ type: 'MOVE_NODE', id, direction }), []);
-  const moveNodeTo = useCallback((id: string, toIndex: number) => dispatch({ type: 'MOVE_NODE_TO', id, toIndex }), []);
+  const updatePosition = useCallback((id: string, x: number, y: number) => dispatch({ type: 'UPDATE_POSITION', id, x, y }), []);
+  const updateSize = useCallback((id: string, width: number, height: number) => dispatch({ type: 'UPDATE_SIZE', id, width, height }), []);
   const setNodes = useCallback((nodes: CanvasNode[]) => dispatch({ type: 'SET_NODES', nodes }), []);
   const setViewport = useCallback((mode: 'desktop' | 'tablet' | 'mobile') => dispatch({ type: 'SET_VIEWPORT', mode }), []);
   const undo = useCallback(() => dispatch({ type: 'UNDO' }), []);
   const redo = useCallback(() => dispatch({ type: 'REDO' }), []);
   const setProjectName = useCallback((name: string) => dispatch({ type: 'SET_PROJECT_NAME', name }), []);
 
-  const selectedNode = state.nodes.find(n => n.id === state.selectedId) ?? null;
-
   const value: CanvasContextValue = {
     ...state,
-    addNode,
-    insertNodeAt,
-    removeNode,
-    selectNode,
-    updateProp,
-    moveNode,
-    moveNodeTo,
-    setNodes,
-    setViewport,
-    undo,
-    redo,
-    setProjectName,
+    addNode, removeNode, duplicateNode, selectNode,
+    updateProp, updatePosition, updateSize, setNodes,
+    setViewport, undo, redo, setProjectName,
     canUndo: state.past.length > 0,
     canRedo: state.future.length > 0,
-    selectedNode,
+    selectedNode: state.nodes.find(n => n.id === state.selectedId) ?? null,
   };
 
   return <CanvasContext.Provider value={value}>{children}</CanvasContext.Provider>;

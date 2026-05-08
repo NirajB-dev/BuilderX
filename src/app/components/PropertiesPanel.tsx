@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { ChevronDown, ChevronUp, Trash2, MousePointer } from 'lucide-react';
+import { ChevronDown, ChevronUp, Trash2, MousePointer, Move, Maximize2 } from 'lucide-react';
 import * as Slider from '@radix-ui/react-slider';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { useCanvas } from '../store/canvasContext';
@@ -141,8 +141,23 @@ const SECTION_DEFAULT_OPEN: Record<string, boolean> = {
   content: true, layout: true, typography: false, spacing: false, styling: false,
 };
 
+function NumberBox({ label, value, onChange, min = 0 }: { label: string; value: number; onChange: (v: number) => void; min?: number }) {
+  return (
+    <div className="flex items-center gap-2">
+      <label className="text-[10px] text-white/40 font-mono w-3">{label}</label>
+      <input
+        type="number"
+        value={Math.round(value)}
+        min={min}
+        onChange={e => onChange(Number(e.target.value))}
+        className="w-full h-7 px-2 rounded-lg bg-white/5 border border-white/10 text-xs text-white/90 font-mono focus:border-blue-500/50 outline-none tabular-nums"
+      />
+    </div>
+  );
+}
+
 export function PropertiesPanel() {
-  const { selectedNode, updateProp, removeNode } = useCanvas();
+  const { selectedNode, updateProp, updatePosition, updateSize, removeNode } = useCanvas();
   const def = selectedNode ? COMPONENT_REGISTRY[selectedNode.type] : null;
 
   const handleChange = useCallback((key: string, value: any) => {
@@ -190,6 +205,29 @@ export function PropertiesPanel() {
 
       {/* Scrollable sections */}
       <div className="flex-1 overflow-y-auto">
+
+        {/* Position & Size — always shown */}
+        <Section title="Transform" defaultOpen={true}>
+          <div className="space-y-2">
+            <div className="flex items-center gap-1.5 mb-1">
+              <Move className="w-3 h-3 text-white/35" />
+              <span className="text-[10px] text-white/35 font-mono uppercase tracking-wider">Position</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <NumberBox label="X" value={selectedNode.position.x} onChange={v => updatePosition(selectedNode.id, v, selectedNode.position.y)} />
+              <NumberBox label="Y" value={selectedNode.position.y} onChange={v => updatePosition(selectedNode.id, selectedNode.position.x, v)} />
+            </div>
+            <div className="flex items-center gap-1.5 mt-3 mb-1">
+              <Maximize2 className="w-3 h-3 text-white/35" />
+              <span className="text-[10px] text-white/35 font-mono uppercase tracking-wider">Size</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <NumberBox label="W" value={selectedNode.size.width}  min={80}  onChange={v => updateSize(selectedNode.id, v, selectedNode.size.height)} />
+              <NumberBox label="H" value={selectedNode.size.height} min={40} onChange={v => updateSize(selectedNode.id, selectedNode.size.width, v)} />
+            </div>
+          </div>
+        </Section>
+
         {SECTION_ORDER.filter(s => bySection[s]).map(sectionId => (
           <Section key={sectionId} title={sectionId} defaultOpen={SECTION_DEFAULT_OPEN[sectionId] ?? false}>
             {bySection[sectionId].map(pd => (
